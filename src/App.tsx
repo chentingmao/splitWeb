@@ -90,6 +90,9 @@ export default function App() {
   // ------------------------------------------------------------
   const [user, setUser] = useState<FirebaseUser | null>(null); 
   const [dbError, setDbError] = useState<string | null>(null);
+  const [trips, setTrips] = useState<{id: string, name: string}[]>([]);
+  const [activeTripId, setActiveTripId] = useState<string | null>(null);
+  const [newTripName, setNewTripName] = useState('');
   
   const [activeTab, setActiveTab] = useState<'expenses' | 'users' | 'report'>('expenses');
   
@@ -138,92 +141,104 @@ export default function App() {
   // ------------------------------------------------------------
   // Effect: 2. 監聽資料 (Firestore)
   // ------------------------------------------------------------
+  // 監聽行程列表
   useEffect(() => {
     if (!user || !db) return;
-
-    // 定義資料路徑 (遵循 Artifacts 規則: public/data)
-    const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'travel_users');
-    const expensesRef = collection(db, 'artifacts', appId, 'public', 'data', 'travel_expenses');
-
-    // 監聽使用者列表
-    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
-      // 簡單排序
-      list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-      setUsers(list);
-      
-      // 如果還沒有選付款人，預設選第一個人
-      if (list.length > 0) {
-        setPayerId(prev => prev || list[0].id);
-      }
-    }, (err) => {
-      console.error("讀取使用者失敗", err);
-      setDbError("無法讀取資料，請檢查網路連線。");
+    const tripsRef = collection(db, 'artifacts', appId, 'public', 'data', 'trips');
+    return onSnapshot(tripsRef, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+      setTrips(list);
     });
-
-    // 監聽消費列表
-    const unsubExpenses = onSnapshot(expensesRef, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Expense));
-      // 依時間排序
-      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      setExpenses(list);
-    }, (err) => {
-      console.error("讀取帳目失敗", err);
-    });
-
-    return () => {
-      unsubUsers();
-      unsubExpenses();
-    };
   }, [user]);
 
-  // 當使用者列表變更時，自動將「分給誰」預設為全選
+  // 監聽特定行程內的資料
   useEffect(() => {
-    if (users.length > 0 && involvedIds.length === 0) {
-      setInvolvedIds(users.map(u => u.id));
-    }
-  }, [users.length]);
+    if (!user || !db || !activeTripId) return;
 
+    const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId, 'users');
+    const expensesRef = collection(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId, 'expenses');
+
+    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
+      setUsers(list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)));
+    });
+
+    const unsubExpenses = onSnapshot(expensesRef, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Expense));
+      setExpenses(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    });
+
+    return () => { unsubUsers(); unsubExpenses(); };
+  }, [user, activeTripId]);
+
+  // 修改後：確保 involvedIds 永遠只包含目前存在的成員
+  useEffect(() => {
+    if (users.length > 0) {
+      // 過濾掉已經不存在於 users 列表中的 ID
+      setInvolvedIds(prev => prev.filter(id => users.some(u => u.id === id)));
+      
+      // 如果目前是空的（例如剛初始化），才預設全選
+      if (involvedIds.length === 0) {
+        setInvolvedIds(users.map(u => u.id));
+      }
+    }
+  }, [users]);
+
+// ------------------------------------------------------------
+  // Actions: 資料寫入 (替換原本的區塊)
   // ------------------------------------------------------------
-  // Actions: 資料寫入
-  // ------------------------------------------------------------
-  const addUser = async () => {
-    if (!newUserName.trim() || !user || !db) return;
+  
+  // 1. 新增行程的函數 (這是新加的)
+  const addTrip = async (name: string) => {
+    if (!name.trim() || !db) return;
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'travel_users'), {
+      const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'trips'), {
+        name: name.trim(),
+        createdAt: Date.now()
+      });
+      setActiveTripId(docRef.id); // 建立後自動切換過去
+    } catch (err) {
+      console.error("新增行程失敗", err);
+    }
+  };
+
+  // 2. 修改後的新增成員
+  const addUser = async () => {
+    // 增加 !activeTripId 判斷，確保有選中行程
+    if (!newUserName.trim() || !user || !db || !activeTripId) return;
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId, 'users'), {
         name: newUserName.trim(),
         createdAt: Date.now()
       });
       setNewUserName('');
     } catch (err) {
       console.error("新增成員失敗", err);
-      alert("新增成員失敗");
     }
   };
 
+  // 3. 修改後的刪除成員
   const removeUser = async (idToRemove: string) => {
-    if (!db) return;
-    // 檢查是否有相關帳目
+    if (!db || !activeTripId) return;
     const hasExpense = expenses.some(e => e.payerId === idToRemove || e.involvedIds.includes(idToRemove));
     if (hasExpense) {
-      alert("這位朋友已經有帳目紀錄，無法刪除。請先刪除相關帳目。");
+      alert("這位朋友已經有帳目紀錄，無法刪除。");
       return;
     }
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'travel_users', idToRemove));
+      // 刪除路徑也要加上 trips/activeTripId
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId, 'users', idToRemove));
     } catch (err) {
       console.error("刪除失敗", err);
     }
   };
 
+  // 4. 修改後的新增消費
   const addExpense = async () => {
-    if (!amount || parseFloat(amount) <= 0) return;
-    if (!description.trim()) return;
-    if (involvedIds.length === 0) return;
-    if (!payerId || !db) return;
+    if (!amount || parseFloat(amount) <= 0 || !description.trim() || involvedIds.length === 0 || !payerId || !db || !activeTripId) return;
 
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'travel_expenses'), {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId, 'expenses'), {
         payerId,
         amount: parseFloat(amount),
         description: description.trim(),
@@ -231,20 +246,20 @@ export default function App() {
         createdAt: Date.now(),
         dateStr: new Date().toLocaleString()
       });
-      
       setAmount('');
       setDescription('');
     } catch (err) {
       console.error("新增帳目失敗", err);
-      alert("新增帳目失敗");
     }
   };
 
+  // 5. 修改後的刪除消費
   const removeExpense = async (id: string) => {
-    if (!db) return;
+    if (!db || !activeTripId) return;
     if (!window.confirm("確定要刪除這筆帳目嗎？")) return;
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'travel_expenses', id));
+      // 刪除路徑也要加上 trips/activeTripId
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId, 'expenses', id));
     } catch (err) {
       console.error("刪除失敗", err);
     }
@@ -349,6 +364,28 @@ export default function App() {
           {user ? <Cloud size={16} className="text-green-300"/> : <CloudOff size={16} className="text-red-300"/>}
         </div>
       </header>
+      <div className="bg-white border-b p-3 flex gap-2 overflow-x-auto">
+        {trips.map(trip => (
+          <button
+            key={trip.id}
+            onClick={() => setActiveTripId(trip.id)}
+            className={`px-4 py-2 rounded-full whitespace-nowrap text-sm ${
+              activeTripId === trip.id ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
+            }`}
+          >
+            {trip.name}
+          </button>
+        ))}
+        <button 
+          onClick={() => {
+            const name = prompt('輸入新行程名稱');
+            if (name) addTrip(name);
+          }}
+          className="px-4 py-2 rounded-full border border-dashed border-gray-300 text-sm text-gray-500"
+        >
+          + 新行程
+        </button>
+      </div>
 
       {/* Main Content Area */}
       <main className="max-w-md mx-auto p-4">
@@ -432,7 +469,10 @@ export default function App() {
                       value={payerId}
                       onChange={(e) => setPayerId(e.target.value)}
                     >
-                      {users.length === 0 && <option>無成員</option>}
+                      {/* 新增這行作為預設值 */}
+                      <option value="" disabled hidden>-- 請點擊選擇付款人 --</option>
+                      
+                      {users.length === 0 && <option disabled>無成員，請先新增</option>}
                       {users.map(u => (
                         <option key={u.id} value={u.id}>{u.name}</option>
                       ))}
@@ -491,18 +531,36 @@ export default function App() {
               ) : (
                 expenses.map(exp => (
                   <div key={exp.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex justify-between items-center">
-                    <div>
-                      <p className="font-bold text-gray-800">{exp.description}</p>
-                      <p className="text-xs text-gray-500">
-                        <span className="font-medium text-blue-600">{getUserName(exp.payerId)}</span> 先付
-                        <span className="mx-1">•</span>
-                        {exp.involvedIds.length === users.length ? '所有人分' : `${exp.involvedIds.length} 人分`}
-                      </p>
+                    <div className="flex-1">
+                      <div className="flex justify-between items-start">
+                        <p className="font-bold text-gray-800 text-lg">{exp.description}</p>
+                        <span className="font-bold font-mono text-lg text-blue-600">${exp.amount.toLocaleString()}</span>
+                      </div>
+                      
+                      <div className="mt-1 space-y-1">
+                        <p className="text-xs text-gray-500 flex items-center gap-1">
+                          <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded font-medium">
+                            {getUserName(exp.payerId)} 付款
+                          </span>
+                          <span className="mx-1">/</span>
+                          <span className="text-gray-400">
+                            共 {exp.involvedIds.length} 人分攤
+                          </span>
+                        </p>
+                        
+                        {/* 新增：顯示具體是誰分攤 */}
+                        <p className="text-xs text-gray-400 italic">
+                          分攤成員：{exp.involvedIds.map(id => getUserName(id)).join('、')}
+                        </p>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className="font-bold font-mono text-lg">${exp.amount}</span>
-                      <button onClick={() => removeExpense(exp.id)} className="text-gray-300 hover:text-red-500">
-                        <Trash2 size={16} />
+                    
+                    <div className="ml-4 flex items-center">
+                      <button 
+                        onClick={() => removeExpense(exp.id)} 
+                        className="text-gray-300 hover:text-red-500 p-2 transition-colors"
+                      >
+                        <Trash2 size={18} />
                       </button>
                     </div>
                   </div>
@@ -560,6 +618,7 @@ export default function App() {
         {/* --- VIEW: REPORT --- */}
         {activeTab === 'report' && (
           <div className="space-y-6">
+            {/* 最佳結算方案卡片 */}
             <div className="bg-gradient-to-br from-indigo-500 to-blue-600 text-white p-6 rounded-2xl shadow-lg">
               <h2 className="font-bold text-xl mb-6 flex items-center gap-2">
                 <DollarSign size={24} className="text-yellow-300"/> 最佳結算方案
@@ -587,26 +646,18 @@ export default function App() {
               )}
             </div>
 
+            {/* 收支明細與展開功能 */}
             <div className="bg-white p-5 rounded-xl shadow-md border border-gray-100">
-              <h3 className="font-bold text-gray-700 mb-4">收支明細</h3>
-              <div className="space-y-3">
-                {users.map(u => {
-                  const bal = settlementReport.balances[u.id] || 0;
-                  const isPositive = bal > 0.01;
-                  const isNegative = bal < -0.01;
-                  
-                  return (
-                    <div key={u.id} className="flex justify-between items-center p-3 border-b border-gray-100 last:border-0">
-                      <span className="text-gray-700">{u.name}</span>
-                      <span className={`font-mono font-bold ${
-                        isPositive ? 'text-green-600' : 
-                        isNegative ? 'text-red-500' : 'text-gray-400'
-                      }`}>
-                        {isPositive && '+'}{bal.toFixed(1)}
-                      </span>
-                    </div>
-                  );
-                })}
+              <h3 className="font-bold text-gray-700 mb-4">收支明細 (點擊查看詳情)</h3>
+              <div className="space-y-1">
+                {users.map(u => (
+                  <UserBalanceRow 
+                    key={u.id} 
+                    user={u} 
+                    balance={settlementReport.balances[u.id] || 0}
+                    expenses={expenses}
+                  />
+                ))}
               </div>
             </div>
           </div>
@@ -638,6 +689,71 @@ export default function App() {
           <span className="text-xs font-medium mt-1">結算</span>
         </button>
       </nav>
+    </div>
+  );
+}
+
+// --- 子組件：處理個別使用者的收支明細與展開邏輯 ---
+function UserBalanceRow({ user, balance, expenses }: { user: User, balance: number, expenses: Expense[] }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const isPositive = balance > 0.01;
+  const isNegative = balance < -0.01;
+
+  // 找出與此人有關的所有帳目
+  const userDetails = expenses.filter(exp => 
+    exp.payerId === user.id || exp.involvedIds.includes(user.id)
+  );
+
+  return (
+    <div className="border-b border-gray-50 last:border-0 pb-1">
+      <div 
+        className="flex justify-between items-center p-3 cursor-pointer hover:bg-gray-50 rounded-lg transition-colors"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center gap-2">
+          <ArrowRight size={14} className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+          <span className="text-gray-700 font-medium">{user.name}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${isExpanded ? 'bg-gray-200 text-gray-600' : 'bg-gray-100 text-gray-400'}`}>
+            {isExpanded ? '收起' : '明細'}
+          </span>
+        </div>
+        <span className={`font-mono font-bold ${
+          isPositive ? 'text-green-600' : 
+          isNegative ? 'text-red-500' : 'text-gray-400'
+        }`}>
+          {isPositive && '+'}{balance.toFixed(1)}
+        </span>
+      </div>
+
+      {isExpanded && (
+        <div className="mx-3 mt-1 mb-3 p-3 bg-gray-50 rounded-lg text-xs space-y-2 border border-gray-100 animate-in fade-in duration-200">
+          {userDetails.length === 0 ? (
+            <p className="text-gray-400 italic text-center">無相關帳目</p>
+          ) : (
+            userDetails.map(exp => {
+              const isPayer = exp.payerId === user.id;
+              const isInvolved = exp.involvedIds.includes(user.id);
+              const share = isInvolved ? (exp.amount / exp.involvedIds.length) : 0;
+              const netEffect = (isPayer ? exp.amount : 0) - share;
+
+              return (
+                <div key={exp.id} className="flex justify-between items-start border-b border-gray-200 border-dashed pb-1 last:border-0">
+                  <div className="flex-1">
+                    <p className="text-gray-600 font-medium">{exp.description}</p>
+                    <div className="flex gap-2 mt-0.5">
+                      {isPayer && <span className="text-[10px] bg-blue-100 text-blue-600 px-1 rounded">支付 ${exp.amount}</span>}
+                      {isInvolved && <span className="text-[10px] bg-orange-100 text-orange-600 px-1 rounded">分攤 ${share.toFixed(1)}</span>}
+                    </div>
+                  </div>
+                  <span className={`font-mono font-medium ${netEffect >= 0 ? 'text-green-600' : 'text-red-400'}`}>
+                    {netEffect >= 0 ? '+' : ''}{netEffect.toFixed(1)}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
     </div>
   );
 }
