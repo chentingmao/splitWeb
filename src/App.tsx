@@ -92,7 +92,6 @@ export default function App() {
   const [dbError, setDbError] = useState<string | null>(null);
   const [trips, setTrips] = useState<{id: string, name: string}[]>([]);
   const [activeTripId, setActiveTripId] = useState<string | null>(null);
-  const [newTripName, setNewTripName] = useState('');
   
   const [activeTab, setActiveTab] = useState<'expenses' | 'users' | 'report'>('expenses');
   
