@@ -39,13 +39,13 @@ interface SettlementReport {
 // ------------------------------------------------------------------
 // 修正：變數名稱統一為 DEFAULT_FIREBASE_CONFIG 以符合後續使用
 const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyDeZE2j3w4BwuYtUn1fIh2U5ed0tiAAM1s",
-  authDomain: "travelslip-6f024.firebaseapp.com",
-  projectId: "travelslip-6f024",
-  storageBucket: "travelslip-6f024.firebasestorage.app",
-  messagingSenderId: "351890443164",
-  appId: "1:351890443164:web:e17a8e125611279e815659",
-  measurementId: "G-H5RN7E1HCB"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 // ------------------------------------------------------------------
